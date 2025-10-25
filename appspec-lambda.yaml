@@ -1,0 +1,13 @@
+# (Lambda deployment config)
+version: 0.0
+Resources:
+  - StudentEnrollmentFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Name: "StudentEnrollmentAPI"
+      Alias: "live"
+      CurrentVersion: "1"
+      TargetVersion:"2"
+Hooks:
+  - BeforeAllowTraffic: "PreTrafficHook"
+  - AfterAllowTraffic: "PostTrafficHook"
