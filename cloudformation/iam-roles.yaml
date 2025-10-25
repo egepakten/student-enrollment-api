@@ -1,1 +1,375 @@
-# (Permissions)
+# Template Header
+#   ├─ Version (always 2010-09-09)
+#   └─ Description
+
+# Resources (things to create)
+#   ├─ CodeBuildServiceRole
+#   │   ├─ Who can use it? (CodeBuild service)
+#   │   └─ What can it do? (Write logs, access S3)
+#   │
+#   ├─ CodePipelineServiceRole
+#   │   ├─ Who can use it? (CodePipeline service)
+#   │   └─ What can it do? (Control CodeBuild, CodeDeploy, etc.)
+#   │
+#   ├─ LambdaExecutionRole
+#   │   ├─ Who can use it? (Lambda service)
+#   │   └─ What can it do? (Write logs)
+#   │
+#   └─ CodeDeployServiceRole
+#       ├─ Who can use it? (CodeDeploy service)
+#       └─ What can it do? (Update Lambda functions)
+
+# Outputs (values to export)
+#   ├─ CodeBuildRoleArn
+#   ├─ CodePipelineRoleArn
+#   ├─ LambdaRoleArn
+#   └─ CodeDeployRoleArn
+
+AWSTemplateFormatVersion: "2010-09-09"
+# ↑ This tells AWS: "This is a CloudFormation template"
+# Think of it like writing "HTML5" at top of an HTML file
+
+Description: "IAM Roles for Student Enrollment API CI/CD Pipeline"
+# ↑ Human-readable description that shows up in AWS Console
+# Helps you remember what this template does
+
+Resources:
+  # Create a new IAM Role (permission slip) for CodeBuild
+  # We need to:
+  # 1. Write logs to CloudWatch (So we can Debug it)
+  # 2. Download Code From Github
+  # 3. Upload Artifacts to S3
+  # 4. Run pytest tests
+  Resources:
+  # ↑ Everything under "Resources:" are AWS things we want to create
+
+  # 1️⃣ CodeBuild Service Role
+  # This role gives CodeBuild permission to do its job
+  CodeBuildServiceRole:
+    # ↑ This is the name we're giving to this resource (can be anything)
+    # We'll reference this name later in the file
+
+    Type: AWS::IAM::Role
+    # ↑ We're creating an IAM Role (a permission slip)
+
+    Properties:
+      # ↑ Now we define the details of this role
+
+      RoleName: StudentEnrollmentCodeBuildRole
+      # ↑ The actual name that shows up in AWS Console under IAM → Roles
+      # This is what humans see when browsing AWS
+
+      AssumeRolePolicyDocument:
+        # ↑ This section answers: "WHO can use this role?"
+        # Think of it as: "Who is allowed to pick up this permission slip?"
+
+        Version: "2012-10-17"
+        # ↑ Policy language version (always use this date)
+        # It's like a "format version" - AWS knows how to read it
+
+        Statement:
+          # ↑ List of rules about who can assume this role
+
+          - Effect: Allow
+            # ↑ "Allow" means "YES, you can use this role"
+            # (opposite would be "Deny")
+
+            Principal:
+              # ↑ "Principal" = WHO is trying to use this role
+
+              Service: codebuild.amazonaws.com
+              # ↑ Only the CodeBuild SERVICE can use this role
+              # Not humans, not other services - only CodeBuild
+
+            Action: "sts:AssumeRole"
+            # ↑ "sts:AssumeRole" = The act of "picking up" the role
+            # STS = Security Token Service (AWS's permission system)
+            # Think: "CodeBuild, you can wear this badge"
+
+      ManagedPolicyArns:
+        # ↑ Pre-made policies from AWS that we can attach
+        # Like: "Give this role the standard CodeBuild permissions"
+
+        - "arn:aws:iam::aws:policy/AWSCodeBuildAdminAccess"
+          # ↑ This gives CodeBuild broad permissions to do its job
+          # ARN = Amazon Resource Name (unique ID for AWS resources)
+
+      Policies:
+        # ↑ Custom policies we write ourselves
+        # These are SPECIFIC permissions beyond the managed policy
+
+        - PolicyName: CodeBuildPolicy
+          # ↑ Name for this custom policy (for organization)
+
+          PolicyDocument:
+            # ↑ The actual permission rules
+
+            Version: "2012-10-17"
+            # ↑ Same version as before
+
+            Statement:
+              # ↑ List of permission rules
+
+              # Rule 1: CloudWatch Logs permissions
+              - Effect: Allow
+                # ↑ "Yes, CodeBuild can do these actions"
+
+                Action:
+                  # ↑ List of actions CodeBuild can perform
+
+                  - "logs:CreateLogGroup"
+                  # ↑ Can create a new log folder in CloudWatch
+                  # Why? CodeBuild needs to organize logs by build
+
+                  - "logs:CreateLogStream"
+                  # ↑ Can create a new log file within a log folder
+                  # Why? Each build run creates a new log stream
+
+                  - "logs:PutLogEvents"
+                  # ↑ Can write log messages
+                  # Why? So you can see "Running tests..." in CloudWatch
+
+                Resource: "*"
+                # ↑ Can do this for ANY log group/stream
+                # '*' = wildcard = "all resources"
+                # (Not best practice, but simpler for learning)
+
+              # Rule 2: S3 permissions for artifacts
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  # ↑ Can DOWNLOAD files from S3
+                  # Why? CodeBuild needs to download your source code
+
+                  - "s3:PutObject"
+                  # ↑ Can UPLOAD files to S3
+                  # Why? CodeBuild needs to upload the built .zip package
+
+                  - "s3:GetBucketLocation"
+                  # ↑ Can check which region the bucket is in
+                  # Why? AWS needs this to route requests properly
+
+                Resource:
+                  # ↑ WHICH S3 buckets can CodeBuild access?
+
+                  - !Sub "arn:aws:s3:::student-enrollment-pipeline-artifacts-${AWS::AccountId}/*"
+                    # ↑ Can access FILES inside our artifacts bucket
+                    # !Sub = "Substitute" - replaces ${AWS::AccountId} with your actual account ID
+                    # Example: arn:aws:s3:::student-enrollment-pipeline-artifacts-123456789012/*
+                    # The /* at the end means "any file in this bucket"
+
+                  - !Sub "arn:aws:s3:::student-enrollment-pipeline-artifacts-${AWS::AccountId}"
+                    # ↑ Can access the BUCKET itself (not just files)
+                    # Why? Need permission to list files, check bucket properties
+
+  # CodePipeline Service Role (Project manager)
+  # - Tell CodeBuild to start building
+  # - Tell CodeDeploy to deploy
+  # - Download Code from github
+  # - Read/Write artifacts from S3
+  # 2️⃣ CodePipeline Service Role
+  # This role gives CodePipeline permission to orchestrate everything
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: StudentEnrollmentCodePipelineRole
+
+      AssumeRolePolicyDocument:
+        # Same structure as CodeBuild - who can use this role?
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+              # ↑ Only CodePipeline service can use this role
+            Action: "sts:AssumeRole"
+
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Rule 1: S3 permissions
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  # ↑ Pipeline needs to DOWNLOAD artifacts
+                  # Example: Download code from source stage
+
+                  - "s3:GetObjectVersion"
+                  # ↑ Can get specific versions of objects
+                  # Why? S3 versioning is enabled, pipeline needs specific versions
+
+                  - "s3:PutObject"
+                  # ↑ Pipeline needs to UPLOAD artifacts
+                  # Example: Save output from each stage
+
+                Resource:
+                  - !Sub "arn:aws:s3:::student-enrollment-pipeline-artifacts-${AWS::AccountId}/*"
+                  # ↑ Only access our specific artifacts bucket
+
+              # Rule 2: CodeBuild permissions
+              - Effect: Allow
+                Action:
+                  - "codebuild:BatchGetBuilds"
+                  # ↑ Check status of builds
+                  # Example: "Is the build finished yet?"
+
+                  - "codebuild:StartBuild"
+                  # ↑ Tell CodeBuild to start a new build
+                  # Example: "Hey CodeBuild, build this code!"
+
+                Resource: "*"
+                # ↑ Can control ANY CodeBuild project
+                # (More secure would be to specify exact project ARN)
+
+              # Rule 3: CodeDeploy permissions
+              - Effect: Allow
+                Action:
+                  - "codedeploy:CreateDeployment"
+                  # ↑ Start a new deployment
+                  # Example: "Deploy version 2 of the Lambda function"
+
+                  - "codedeploy:GetDeployment"
+                  # ↑ Check deployment status
+                  # Example: "Is the deployment finished?"
+
+                  - "codedeploy:GetDeploymentConfig"
+                  # ↑ Read deployment settings
+                  # Example: "What's the Canary configuration?"
+
+                  - "codedeploy:GetApplicationRevision"
+                  # ↑ Get info about what's being deployed
+
+                  - "codedeploy:RegisterApplicationRevision"
+                  # ↑ Register a new version to deploy
+
+                Resource: "*"
+
+              # Rule 4: GitHub connection permissions
+              - Effect: Allow
+                Action:
+                  - "codestar-connections:UseConnection"
+                  # ↑ Use the GitHub connection we set up earlier
+                  # Why? Pipeline needs to download code from GitHub
+
+                Resource: "*"
+
+              # Rule 5: Lambda permissions
+              - Effect: Allow
+                Action:
+                  - "lambda:InvokeFunction"
+                  # ↑ Call Lambda functions
+                  # Why? CodePipeline might need to trigger test functions
+
+                  - "lambda:ListFunctions"
+                  # ↑ See what Lambda functions exist
+
+                Resource: "*"
+
+  # 3️⃣ Lambda Execution Role
+  # This role is worn BY your Lambda function when it runs
+  # Think: "What can my FastAPI app do while running?"
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: StudentEnrollmentLambdaRole
+
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+              # ↑ Lambda service can use this role
+              # This means: "When Lambda runs, it wears this badge"
+            Action: "sts:AssumeRole"
+
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+          # ↑ AWS's pre-made policy for basic Lambda permissions
+          # Includes: Write logs to CloudWatch
+          # We don't need to write these permissions manually!
+
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # CloudWatch Logs permissions
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  # ↑ Create log folders
+
+                  - "logs:CreateLogStream"
+                  # ↑ Create log files
+
+                  - "logs:PutLogEvents"
+                  # ↑ Write log messages
+                  # Example: print("Hello") in your code → appears in CloudWatch
+
+                Resource: "*"
+
+  # 4️⃣ CodeDeploy Service Role
+  # This role gives CodeDeploy permission to update Lambda
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: StudentEnrollmentCodeDeployRole
+
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+              # ↑ CodeDeploy service can use this role
+            Action: "sts:AssumeRole"
+
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AWSCodeDeployRoleForLambda"
+          # ↑ AWS's pre-made policy for Lambda deployments
+          # Includes:
+          #   - Update Lambda function code
+          #   - Shift traffic between versions
+          #   - Monitor deployment health
+
+Outputs:
+  # ↑ These are values we want to save and reuse
+  # Think: "Export these values so other templates can use them"
+
+  CodeBuildRoleArn:
+    # ↑ Name of this output
+
+    Description: CodeBuild Service Role ARN
+    # ↑ Human-readable description
+
+    Value: !GetAtt CodeBuildServiceRole.Arn
+    # ↑ !GetAtt = "Get Attribute"
+    # Gets the ARN (unique ID) of the CodeBuildServiceRole we created above
+    # Example ARN: arn:aws:iam::123456789012:role/StudentEnrollmentCodeBuildRole
+
+    Export:
+      Name: StudentEnrollment-CodeBuildRole
+      # ↑ Export this value with this name
+      # Other CloudFormation templates can import this by name
+      # Example: !ImportValue StudentEnrollment-CodeBuildRole
+
+  CodePipelineRoleArn:
+    Description: CodePipeline Service Role ARN
+    Value: !GetAtt CodePipelineServiceRole.Arn
+    Export:
+      Name: StudentEnrollment-CodePipelineRole
+
+  LambdaRoleArn:
+    Description: Lambda Execution Role ARN
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name: StudentEnrollment-LambdaRole
+
+  CodeDeployRoleArn:
+    Description: CodeDeploy Service Role ARN
+    Value: !GetAtt CodeDeployServiceRole.Arn
+    Export:
+      Name: StudentEnrollment-CodeDeployRole
