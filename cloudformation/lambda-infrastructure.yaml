@@ -1,0 +1,521 @@
+# ============================================
+# LAMBDA INFRASTRUCTURE TEMPLATE
+# ============================================
+# This creates fully functional serverless FastAPI application
+#
+# What gets created:
+# 1. Lambda Function (your FastAPI app)
+# 2. Lambda Alias (for gradual deployments)
+# 3. API Gateway (public URL for your API)
+# 4. CloudWatch Logs (for debugging)
+# 5. CloudWatch Alarm (monitors errors)
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Lambda Function and API Gateway for Student Enrollment API"
+
+# ──────────────────────────────────────
+# PARAMETERS
+# ──────────────────────────────────────
+# These are values passed in when creating the stack
+# Think of them as "function arguments" for CloudFormation
+
+Parameters:
+  LambdaRoleArn:
+    # ↑ We need the ARN of the Lambda execution role
+    # This was created in the IAM roles stack
+    # We'll pass it in when deploying this stack
+
+    Type: String
+    Description: Lambda Execution Role ARN
+    # Example value: arn:aws:iam::123456789012:role/StudentEnrollmentLambdaRole
+
+# ──────────────────────────────────────
+# RESOURCES (Things to Create)
+# ──────────────────────────────────────
+
+Resources:
+  # ════════════════════════════════════════════════════════
+  # 1️⃣ LAMBDA FUNCTION
+  # ════════════════════════════════════════════════════════
+  # This is your FastAPI application running serverlessly
+
+  StudentEnrollmentFunction:
+    # ↑ Logical name (used within this template)
+
+    Type: AWS::Lambda::Function
+    # ↑ We're creating a Lambda function
+
+    Properties:
+      # ────────────────────────────────────
+      # Basic Configuration
+      # ────────────────────────────────────
+
+      FunctionName: StudentEnrollmentAPI
+      # ↑ The name shown in AWS Console
+      # This is what you'll see when browsing Lambda functions
+
+      Runtime: python3.11
+      # ↑ Which Python version to use
+      # Must match your local development (we're using 3.11)
+      # Available: python3.8, python3.9, python3.10, python3.11, python3.12
+
+      Handler: app.main.lambda_handler
+      # ↑ Which function to call when Lambda starts
+      # Format: filename.function_name
+      # Breakdown:
+      #   - app.main = Look in app/main.py file
+      #   - lambda_handler = Call the lambda_handler() function
+      # This function must exist in your code!
+
+      Role: !Ref LambdaRoleArn
+      # ↑ Which IAM role this Lambda uses
+      # !Ref = "Reference" - gets the parameter value we passed in
+      # This role gives Lambda permission to write logs
+
+      # ────────────────────────────────────
+      # Performance Configuration
+      # ────────────────────────────────────
+
+      Timeout: 30
+      # ↑ Maximum seconds Lambda can run before being killed
+      # Why 30? API calls shouldn't take longer than this
+      # Range: 1-900 seconds (15 minutes max)
+      # If your function runs longer, it gets terminated
+
+      MemorySize: 512
+      # ↑ RAM allocated to this function (in MB)
+      # More memory = More CPU power (AWS scales them together)
+      # Why 512? Good balance for FastAPI + dependencies
+      # Range: 128-10240 MB
+      # Cost scales with memory size
+
+      # ────────────────────────────────────
+      # Environment Variables
+      # ────────────────────────────────────
+      # These are like config settings your code can read
+
+      Environment:
+        Variables:
+          ENVIRONMENT: production
+          # ↑ Your code can read this with: os.getenv('ENVIRONMENT')
+          # Useful for: Different behavior in dev vs prod
+          # Example: Enable debug mode only in development
+
+          # You can add more:
+          # DATABASE_URL: !Ref DatabaseEndpoint
+          # API_KEY: !Ref ApiKeyParameter
+
+      # ────────────────────────────────────
+      # Initial Code (Placeholder)
+      # ────────────────────────────────────
+      # This is TEMPORARY code just to create the function
+      # The CI/CD pipeline will replace this with your real code
+
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              # ↑ Minimal function just to create Lambda
+              # This gets replaced by CodeDeploy during first deployment
+              return {
+                  'statusCode': 200,
+                  'body': '{"message": "Initial deployment - will be replaced by pipeline"}'
+              }
+
+      # ────────────────────────────────────
+      # Tags (for Organization)
+      # ────────────────────────────────────
+      # Tags help you organize and track resources
+
+      Tags:
+        - Key: Project
+          Value: StudentEnrollmentAPI
+          # ↑ Helps you filter: "Show me all StudentEnrollmentAPI resources"
+
+        - Key: Environment
+          Value: Production
+          # ↑ Helps you separate: prod vs staging vs dev resources
+
+  # ════════════════════════════════════════════════════════
+  # 2️⃣ LAMBDA VERSION
+  # ════════════════════════════════════════════════════════
+  # Creates a "snapshot" of your Lambda function
+  # Think: Git commit for your Lambda code
+
+  LambdaVersion:
+    Type: AWS::Lambda::Version
+    # ↑ Every time you update Lambda, a new version is created
+    # Version 1, Version 2, Version 3, etc.
+
+    Properties:
+      FunctionName: !Ref StudentEnrollmentFunction
+      # ↑ Which function to create a version for
+      # !Ref = Gets the function name from above
+
+      # Why do we need versions?
+      # - Allows rollback to previous version if new version breaks
+      # - Enables gradual traffic shifting (Canary deployments)
+      # - Keeps history of all deployments
+
+  # ════════════════════════════════════════════════════════
+  # 3️⃣ LAMBDA ALIAS
+  # ════════════════════════════════════════════════════════
+  # An alias is a "pointer" to a Lambda version
+  # Think: Like a bookmark that can move between versions
+
+  LambdaAlias:
+    Type: AWS::Lambda::Alias
+
+    Properties:
+      FunctionName: !Ref StudentEnrollmentFunction
+      # ↑ Which function this alias belongs to
+
+      FunctionVersion: !GetAtt LambdaVersion.Version
+      # ↑ Which version does this alias point to initially?
+      # !GetAtt = "Get Attribute" - gets the version number
+
+      Name: live
+      # ↑ Name of this alias (shows up in AWS Console)
+      # "live" is common convention for production traffic
+      # Other common names: staging, prod, dev
+
+      # Why do we need an alias?
+      # Without alias:
+      #   User → Lambda v2 (immediately, 100% traffic)
+      #   Bug in v2 → All users affected ❌
+      #
+      # With alias:
+      #   User → "live" alias → Lambda v1 (90% traffic)
+      #                        → Lambda v2 (10% traffic)
+      #   Bug in v2 → Only 10% affected, auto-rollback ✅
+      #   Working? → Shift to 50%, then 100% gradually
+
+  # ════════════════════════════════════════════════════════
+  # 4️⃣ API GATEWAY (HTTP API)
+  # ════════════════════════════════════════════════════════
+  # Creates a public URL that triggers your Lambda
+  # Without this, Lambda has no URL and can't be called from internet
+
+  ApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    # ↑ Note: V2 = HTTP API (simpler, cheaper than REST API)
+
+    Properties:
+      Name: StudentEnrollmentAPI
+      # ↑ Name shown in API Gateway console
+
+      ProtocolType: HTTP
+      # ↑ Type of API
+      # Options: HTTP (simpler) or WEBSOCKET (for real-time)
+      # We're using HTTP for REST API
+
+      Description: API Gateway for Student Enrollment API
+      # ↑ Human-readable description
+
+      # ────────────────────────────────────
+      # CORS Configuration
+      # ────────────────────────────────────
+      # CORS = Cross-Origin Resource Sharing
+      # Allows web browsers to call your API from different domains
+
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+          # ↑ Which domains can call this API?
+          # '*' = Any domain (good for public API)
+          # Production: Specify exact domains like ['https://myapp.com']
+
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+          # ↑ Which HTTP methods are allowed?
+          # OPTIONS is required for CORS preflight requests
+          # Add PUT, DELETE if needed
+
+        AllowHeaders:
+          - "*"
+          # ↑ Which HTTP headers can be sent?
+          # '*' = Any header
+          # Production: Be more specific like ['Content-Type', 'Authorization']
+
+      # Result: You get a URL like:
+      # https://abc123xyz.execute-api.us-east-1.amazonaws.com
+
+  # ════════════════════════════════════════════════════════
+  # 5️⃣ API GATEWAY INTEGRATION
+  # ════════════════════════════════════════════════════════
+  # Connects API Gateway to your Lambda function
+  # Think: "When someone calls the API, trigger this Lambda"
+
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+
+    Properties:
+      ApiId: !Ref ApiGateway
+      # ↑ Which API Gateway to integrate with
+
+      IntegrationType: AWS_PROXY
+      # ↑ Type of integration
+      # AWS_PROXY = Lambda receives the full HTTP request
+      #   - Headers, body, query params all passed to Lambda
+      #   - Lambda returns full HTTP response
+      # Alternative: AWS (requires mapping templates - more complex)
+
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAlias.AliasArn}/invocations"
+      # ↑ Where to send requests? (Lambda ARN)
+      # !Sub = Substitute variables into string
+      # ${AWS::Region} = Replaced with actual region (us-east-1)
+      # ${LambdaAlias.AliasArn} = ARN of our Lambda alias
+      # Note: We use the ALIAS, not the function directly!
+      # Why? So traffic shifting works during deployments
+
+      PayloadFormatVersion: "2.0"
+      # ↑ How API Gateway formats the event sent to Lambda
+      # 2.0 = Simpler format (recommended for HTTP APIs)
+      # 1.0 = REST API format (more verbose)
+
+  # ════════════════════════════════════════════════════════
+  # 6️⃣ API GATEWAY ROUTE
+  # ════════════════════════════════════════════════════════
+  # Defines which URLs trigger the Lambda
+  # Think: URL routing rules
+
+  ApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+
+    Properties:
+      ApiId: !Ref ApiGateway
+      # ↑ Which API this route belongs to
+
+      RouteKey: "$default"
+      # ↑ Which URLs match this route?
+      # '$default' = Catch-all (matches ANY path)
+      #   - /health → triggers Lambda
+      #   - /enroll → triggers Lambda
+      #   - /anything → triggers Lambda
+      # Alternative: Specific routes like 'GET /users' or 'POST /enroll'
+      # We use $default because FastAPI handles routing internally
+
+      Target: !Sub "integrations/${ApiIntegration}"
+      # ↑ Where to send matched requests?
+      # Points to the integration we created above
+
+  # ════════════════════════════════════════════════════════
+  # 7️⃣ API GATEWAY STAGE
+  # ════════════════════════════════════════════════════════
+  # A "stage" is like an environment (prod, dev, staging)
+  # Required to make the API accessible
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+
+    Properties:
+      ApiId: !Ref ApiGateway
+      # ↑ Which API this stage belongs to
+
+      StageName: "$default"
+      # ↑ Name of this stage
+      # '$default' = Default stage (no stage name in URL)
+      # Alternative: 'prod', 'dev', 'v1' (appears in URL)
+      # Example URLs:
+      #   $default: https://abc123.execute-api.us-east-1.amazonaws.com/
+      #   prod:     https://abc123.execute-api.us-east-1.amazonaws.com/prod/
+
+      AutoDeploy: true
+      # ↑ Automatically deploy changes to this stage?
+      # true = Changes apply immediately (good for dev/demo)
+      # false = Manual deployment required (safer for prod)
+
+      # ────────────────────────────────────
+      # Access Logs Configuration
+      # ────────────────────────────────────
+      # Logs every API request for debugging/monitoring
+
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiLogGroup.Arn
+        # ↑ Where to send logs (CloudWatch Log Group)
+
+        Format: "$context.requestId $context.error.message $context.error.messageString"
+        # ↑ What to log for each request
+        # Available variables:
+        #   $context.requestId = Unique ID for this request
+        #   $context.error.message = Error message if any
+        #   $context.status = HTTP status code
+        #   $context.requestTime = When request was made
+        # Full list: https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-logging-variables.html
+
+  # ════════════════════════════════════════════════════════
+  # 8️⃣ LAMBDA PERMISSION FOR API GATEWAY
+  # ════════════════════════════════════════════════════════
+  # Gives API Gateway permission to invoke your Lambda
+  # Without this, API Gateway gets "Access Denied" when calling Lambda
+
+  LambdaApiPermission:
+    Type: AWS::Lambda::Permission
+    # ↑ Not an IAM policy - this is Lambda-specific permission
+
+    Properties:
+      FunctionName: !Ref LambdaAlias
+      # ↑ Which Lambda function to give permission for
+      # Note: We use the ALIAS, not the function name!
+
+      Action: lambda:InvokeFunction
+      # ↑ What action is API Gateway allowed to do?
+      # InvokeFunction = Call/trigger the Lambda
+
+      Principal: apigateway.amazonaws.com
+      # ↑ WHO is allowed to invoke Lambda?
+      # apigateway.amazonaws.com = The API Gateway service
+
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*"
+      # ↑ WHICH API Gateway specifically?
+      # ${ApiGateway} = Our specific API Gateway
+      # /* = Any route, any method
+      # This prevents OTHER API Gateways from calling this Lambda
+
+  # ════════════════════════════════════════════════════════
+  # 9️⃣ CLOUDWATCH LOG GROUP (for API Gateway)
+  # ════════════════════════════════════════════════════════
+  # Stores all API Gateway access logs
+  # Think: A folder for all your API request logs
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+
+    Properties:
+      LogGroupName: /aws/apigateway/StudentEnrollmentAPI
+      # ↑ Name of log group in CloudWatch
+      # Convention: /aws/[service]/[app-name]
+
+      RetentionInDays: 7
+      # ↑ How long to keep logs before deleting?
+      # 7 days = Keeps last week of logs
+      # Options: 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653
+      # Why delete? Saves storage costs
+      # Production: Use 30 or 90 days
+
+  # ════════════════════════════════════════════════════════
+  # 🔟 CLOUDWATCH ALARM (Error Monitoring)
+  # ════════════════════════════════════════════════════════
+  # Watches for errors and triggers auto-rollback
+  # Think: Smoke detector for your API
+
+  ErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+
+    Properties:
+      AlarmName: StudentEnrollment-HighErrorRate
+      # ↑ Name shown in CloudWatch Alarms dashboard
+
+      AlarmDescription: Triggers when Lambda error rate exceeds 5%
+      # ↑ Human-readable description of what this alarm does
+
+      # ────────────────────────────────────
+      # What to Monitor
+      # ────────────────────────────────────
+
+      MetricName: Errors
+      # ↑ Which metric to watch
+      # "Errors" = Number of Lambda execution errors
+      # Other options: Invocations, Duration, Throttles
+
+      Namespace: AWS/Lambda
+      # ↑ Which AWS service's metrics
+      # AWS/Lambda = Lambda service metrics
+      # AWS/ApiGateway = API Gateway metrics
+
+      Statistic: Sum
+      # ↑ How to calculate the metric
+      # Sum = Total errors in time period
+      # Average = Average errors per invocation
+      # Other: Maximum, Minimum, SampleCount
+
+      # ────────────────────────────────────
+      # When to Trigger
+      # ────────────────────────────────────
+
+      Period: 60
+      # ↑ Time period to evaluate (in seconds)
+      # 60 = 1 minute
+      # Evaluates: "How many errors in the last 1 minute?"
+
+      EvaluationPeriods: 2
+      # ↑ How many periods must fail before alarming?
+      # 2 = Must fail for 2 consecutive minutes
+      # Why? Prevents false alarms from temporary spikes
+      # Total time before alarm: Period × EvaluationPeriods = 2 minutes
+
+      Threshold: 5
+      # ↑ What value triggers the alarm?
+      # 5 = More than 5 errors in a 1-minute period
+      # Tune this based on your traffic:
+      #   - Low traffic (10 req/min): Threshold of 1-2
+      #   - High traffic (1000 req/min): Threshold of 50-100
+
+      ComparisonOperator: GreaterThanThreshold
+      # ↑ How to compare metric to threshold?
+      # GreaterThanThreshold = Alarm if metric > threshold
+      # Other options:
+      #   - LessThanThreshold
+      #   - GreaterThanOrEqualToThreshold
+      #   - LessThanOrEqualToThreshold
+
+      # ────────────────────────────────────
+      # Which Lambda to Monitor
+      # ────────────────────────────────────
+
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref StudentEnrollmentFunction
+          # ↑ Monitor this specific Lambda function
+          # Dimensions = Filters to narrow down which resource
+
+      # ────────────────────────────────────
+      # How to Handle Missing Data
+      # ────────────────────────────────────
+
+      TreatMissingData: notBreaching
+      # ↑ What if no data points in this period?
+      # notBreaching = Don't alarm (assume OK)
+      # Other options:
+      #   - breaching (assume it's bad - trigger alarm)
+      #   - ignore (don't count this period)
+      #   - missing (stay in current state)
+
+      # What happens when alarm triggers?
+      # CodeDeploy watches this alarm during deployments
+      # If alarm triggers → Automatic rollback to previous version
+
+# ──────────────────────────────────────
+# OUTPUTS
+# ──────────────────────────────────────
+# Values to export for use in other stacks or for display
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway Endpoint URL
+    Value: !GetAtt ApiGateway.ApiEndpoint
+    # ↑ Gets the full URL of your API
+    # Example: https://abc123xyz.execute-api.us-east-1.amazonaws.com
+    # You'll use this URL to test your API!
+
+    Export:
+      Name: StudentEnrollment-ApiEndpoint
+      # ↑ Export so other stacks can import it
+      # Example: !ImportValue StudentEnrollment-ApiEndpoint
+
+  LambdaFunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt StudentEnrollmentFunction.Arn
+    # ↑ Unique identifier for your Lambda function
+
+    Export:
+      Name: StudentEnrollment-LambdaArn
+
+  LambdaAliasArn:
+    Description: Lambda Alias ARN
+    Value: !Ref LambdaAlias
+    # This is what CodeDeploy will update during deployments
+
+    Export:
+      Name: StudentEnrollment-LambdaAlias
